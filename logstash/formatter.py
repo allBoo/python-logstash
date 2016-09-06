@@ -3,6 +3,7 @@ import logging
 import socket
 import sys
 from datetime import datetime
+
 try:
     import json
 except ImportError:
@@ -10,7 +11,6 @@ except ImportError:
 
 
 class LogstashFormatterBase(logging.Formatter):
-
     def __init__(self, message_type='Logstash', tags=None, fqdn=False):
         self.message_type = message_type
         self.tags = tags if tags is not None else []
@@ -84,6 +84,7 @@ class LogstashFormatterBase(logging.Formatter):
         else:
             return bytes(json.dumps(message), 'utf-8')
 
+
 class LogstashFormatterVersion0(LogstashFormatterBase):
     version = 0
 
@@ -115,7 +116,6 @@ class LogstashFormatterVersion0(LogstashFormatterBase):
 
 
 class LogstashFormatterVersion1(LogstashFormatterBase):
-
     def format(self, record):
         # Create message dict
         message = {
