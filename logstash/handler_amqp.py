@@ -1,26 +1,22 @@
-import socket
-from logging.handlers import SocketHandler
-
 try:
     from urllib import urlencode
 except ImportError:
     from urllib.parse import urlencode
 
-from kombu import Connection, Exchange, producers
+from logging.handlers import SocketHandler
 
+import pika
 from logstash import formatter
 
 
 class AMQPLogstashHandler(SocketHandler, object):
     """AMQP Log Format handler
-
     :param host: AMQP host (default 'localhost')
     :param port: AMQP port (default 5672)
     :param username: AMQP user name (default 'guest', which is the default for
         RabbitMQ)
     :param password: AMQP password (default 'guest', which is the default for
         RabbitMQ)
-
     :param exchange: AMQP exchange. Default 'logging.gelf'.
         A queue binding must be defined on the server to prevent
         log messages from being dropped.
@@ -30,11 +26,9 @@ class AMQPLogstashHandler(SocketHandler, object):
     :param passive: exchange is declared passively, meaning that an error is
         raised if the exchange does not exist, and succeeds otherwise. This is
         useful if the user does not have configure permission on the exchange.
-
     :param tags: list of tags for a logger (default is None).
     :param message_type: The type of the message (default logstash).
     :param version: version of logstash event schema (default is 0).
-
     :param extra_fields: Send extra fields on the log record to graylog
         if true (the default)
     :param fqdn: Use fully qualified domain name of localhost as source
@@ -74,67 +68,65 @@ class AMQPLogstashHandler(SocketHandler, object):
         self.facility = facility
 
     def makeSocket(self, **kwargs):
-        socket = KombuSocket(self.host,
-                             self.port,
-                             self.username,
-                             self.password,
-                             self.virtual_host,
-                             self.exchange,
-                             self.routing_key,
-                             self.exchange_is_durable,
-                             self.declare_exchange_passively,
-                             self.exchange_type)
-        socket.connect()
-        return socket
+        return PikaSocket(self.host,
+                          self.port,
+                          self.username,
+                          self.password,
+                          self.virtual_host,
+                          self.exchange,
+                          self.routing_key,
+                          self.exchange_is_durable,
+                          self.declare_exchange_passively,
+                          self.exchange_type)
 
     def makePickle(self, record):
         return self.formatter.format(record)
 
-    def send(self, s):
-        """
-        Behaves exactly like SocketHandler.send() except that it allows
-        exceptions to bubble up to emit() so we can atleast be aware of
-        logging failures.
-        """
-        if self.sock is None:
-            self.createSocket()
 
-        if self.sock:
-            try:
-                self.sock.sendall(s)
-            except (OSError, socket.error): #pragma: no cover
-                self.sock.close()
-                self.sock = None  # so we can call createSocket next time
-                raise
-
-
-class KombuSocket(object):
-
+class PikaSocket(object):
     def __init__(self, host, port, username, password, virtual_host, exchange,
-                routing_key, durable, passive, exchange_type):
-        # create connection
-        self.connection = Connection(hostname=host,
-                                     port=port,
-                                     userid=username,
-                                     password=password,
-                                     virtual_host=virtual_host)
+                 routing_key, durable, passive, exchange_type):
 
-        # create exchange
-        self.exchange = Exchange(exchange, type=exchange_type, durable=durable)
-        self.exchange.passive = passive
-
-        # other publishing params
+        # create connection parameters
+        credentials = pika.PlainCredentials(username, password)
+        self.parameters = pika.ConnectionParameters(host, port, virtual_host,
+                                                    credentials)
         self.routing_key = routing_key
+        self.exchange = exchange
+        self.durable = durable
+        self.passive = passive
+        self.exchange_type = exchange_type
+
+        self._setup_connection()
+
+    def _setup_connection(self):
+        # create connection & channel
+        self.connection = pika.BlockingConnection(self.parameters)
+        self.channel = self.connection.channel()
+
+        # create an exchange, if needed
+        self.channel.exchange_declare(exchange=self.exchange,
+                                      exchange_type=self.exchange_type,
+                                      passive=self.passive,
+                                      durable=self.durable)
+
+        # needed when publishing
+        self.spec = pika.spec.BasicProperties(delivery_mode=2)
 
     def sendall(self, data):
-        with producers[self.connection].acquire(block=True) as producer:
-            producer.publish(data,
-                             routing_key=self.routing_key,
-                             exchange=self.exchange,
-                             declare=[self.exchange])
+        retry_count = 5
 
-    def connect(self):
-        self.connection.connect()
+        for i in range(retry_count):
+            try:
+                self.channel.basic_publish(self.exchange,
+                                           self.routing_key,
+                                           data,
+                                           properties=self.spec)
+                return
+            except:
+                if i == retry_count - 1:
+                    raise
+                self._setup_connection()
 
     def close(self):
         try:
