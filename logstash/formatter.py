@@ -1,7 +1,7 @@
-import traceback
 import logging
 import socket
 import sys
+import traceback
 from datetime import datetime
 
 try:
@@ -140,3 +140,10 @@ class LogstashFormatterVersion1(LogstashFormatterBase):
             message.update(self.get_debug_fields(record))
 
         return self.serialize(message)
+
+
+# Added to get serialized strings instead of bytes
+class LogstashFormatterVersion2(LogstashFormatterVersion1):
+    @classmethod
+    def serialize(cls, message):
+        return json.dumps(message)
